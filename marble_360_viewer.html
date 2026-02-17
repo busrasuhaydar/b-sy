@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Marble Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+            user-select: none;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        canvas {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        /* Sinema Modu Bantları */
+        #cinema-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 50;
+            opacity: 0;
+            transition: opacity 0.6s ease;
+        }
+        #cinema-overlay.active { opacity: 1; }
+        #cinema-overlay::before,
+        #cinema-overlay::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            background: #000;
+            transition: height 0.6s ease;
+        }
+        #cinema-overlay::before { top: 0; height: 14%; }
+        #cinema-overlay::after  { bottom: 0; height: 14%; }
+
+        /* 3 Buton - Sol Üst (sadece mobil/tablet) */
+        #controls {
+            position: fixed;
+            top: env(safe-area-inset-top, 20px);
+            left: env(safe-area-inset-left, 20px);
+            margin-top: 20px;
+            margin-left: 20px;
+            display: none; /* Varsayılan: gizli */
+            gap: 14px;
+            z-index: 200;
+            transition: opacity 0.5s ease;
+        }
+        #controls.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        
+        /* Touch cihazlarda göster */
+        @media (hover: none) and (pointer: coarse) {
+            #controls { display: flex; }
+        }
+        
+        /* Tablet ve mobilde göster */
+        @media (max-width: 1024px) {
+            #controls { display: flex; }
+        }
+
+        .dot-btn {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: rgba(0,0,0,0.55);
+            border: 1.5px solid rgba(255,255,255,0.28);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 18px;
+            color: #fff;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+            transition: background 0.25s, border-color 0.25s, transform 0.15s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .dot-btn:active {
+            transform: scale(0.88);
+        }
+
+        .dot-btn.on {
+            background: rgba(255,255,255,0.22);
+            border-color: rgba(255,255,255,0.7);
+            box-shadow: 0 2px 20px rgba(255,255,255,0.25);
+        }
+
+        /* Ripple */
+        .dot-btn::after {
+            content: '';
+            position: absolute;
+            width: 80%;
+            height: 80%;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.25);
+            transform: scale(0);
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+        .dot-btn:active::after {
+            transform: scale(2.2);
+            opacity: 0;
+        }
+
+        /* Yükleme göstergesi */
+        #loader {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 300;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            transition: opacity 0.8s ease;
+        }
+        #loader.hidden { opacity: 0; pointer-events: none; }
+        .loader-ring {
+            width: 44px;
+            height: 44px;
+            border: 3px solid rgba(255,255,255,0.15);
+            border-top-color: rgba(255,255,255,0.7);
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Responsive */
+        @media (max-width: 380px) {
+            #controls { margin-top: 14px; margin-left: 14px; gap: 10px; }
+            .dot-btn { width: 38px; height: 38px; font-size: 16px; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+<div id="cinema-overlay"></div>
+
+<div id="controls">
+    <div class="dot-btn" id="btn-img"         title="Görsel Değiştir">🖼️</div>
+    <div class="dot-btn" id="btn-cinema"      title="Sinema Modu">🎬</div>
+    <div class="dot-btn" id="btn-marble"      title="Cell Pouring">💧</div>
+    <div class="dot-btn" id="btn-marble-wave" title="Wave Pouring">🌊</div>
+</div>
+
+<div id="loader">
+    <div class="loader-ring"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ─── GLOBALS ─────────────────────────────────────────── */
+let scene, camera, renderer, skybox;
+let isDragging = false;
+let prevTouch  = { x: 0, y: 0 };
+let rotation   = { x: 0, y: 0 };
+let lastTime   = performance.now();
+
+let currentImageIndex = 0;
+let textureLoader;
+let marbleTexture = null;
+
+// Marble pouring - 2 mod
+let isPouring       = false;
+let pouringProgress = 0;
+let pouringMode     = 'cell'; // 'cell' veya 'wave'
+const pouringSpeed  = 0.08; // Çok daha yavaş - daha uzun süre görünür olacak
+
+// Sinema modu
+let isCinema        = false;
+
+const skyboxImages = [
+    'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/KKKKM.jpg',
+    'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/KMLLO.jpg',
+    'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/KMMK.jpg',
+    'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/llll.jpg'
+];
+
+/* ─── VERTEX & FRAGMENT SHADER ───────────────────────── */
+const vertexShader = `
+    varying vec2 vUv;
+    varying vec3 vPosition;
+    void main() {
+        vUv      = uv;
+        vPosition = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+const fragmentShader = `
+    uniform sampler2D baseTexture;
+    uniform sampler2D marbleTexture;
+    uniform float pouringProgress;
+    uniform float time;
+    uniform float faceIndex;
+    uniform float mirrorX;
+    uniform float mirrorY;
+    uniform float scaleMultiplier;
+    uniform float speedMultiplier;
+    uniform float pouringMode; // 0.0 = cell, 1.0 = wave
+    varying vec2 vUv;
+    varying vec3 vPosition;
+
+    // Perlin-like noise for cell pattern
+    float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }
+
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0));
+        float d = hash(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+
+    float easeInOutQuad(float t) {
+        return t < 0.5 ? 2.0 * t * t : 1.0 - pow(-2.0 * t + 2.0, 2.0) / 2.0;
+    }
+
+    float smoothBlend(float e0, float e1, float x) {
+        float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    float getPulse(float t, float offset) {
+        return 0.6 + 0.4 * (sin(t + offset) * 0.5 + 0.5);
+    }
+
+    void main() {
+        vec2 uv = vUv;
+        if (mirrorX > 0.5) uv.x = 1.0 - uv.x;
+        if (mirrorY > 0.5) uv.y = 1.0 - uv.y;
+        
+        vec4 baseColor = texture2D(baseTexture, uv);
+
+        if (pouringProgress > 0.0) {
+            float easedProgress = easeInOutQuad(pouringProgress);
+            float t = time * 0.15 * speedMultiplier; // Daha da yavaş
+            
+            vec2 totalDisplacement = vec2(0.0);
+            
+            if (pouringMode < 0.5) {
+                // ═══ CELL MODE (B tuşu / 💧) ═══
+                vec2 marbleUV = uv * scaleMultiplier;
+                marbleUV.x += sin(uv.y * 3.0 + t * 0.8) * 0.06 * easedProgress;
+                marbleUV.y += cos(uv.x * 3.0 + t * 0.6) * 0.06 * easedProgress;
+                
+                vec4 marbleColor = texture2D(marbleTexture, marbleUV * 2.0);
+                float marbleIntensity = (marbleColor.r + marbleColor.g + marbleColor.b) / 3.0;
+                
+                float cellNoise = noise(uv * 4.0 + t * 0.3);
+                float cellNoise2 = noise(uv * 6.0 - t * 0.25);
+                float combinedCell = mix(cellNoise, cellNoise2, 0.5);
+                float pattern = mix(marbleIntensity, combinedCell, 0.4);
+                
+                float pulse = getPulse(t * 1.5 + faceIndex, faceIndex * 2.0);
+                float adjProgress = easedProgress * pulse;
+                
+                vec2 flowDir = vec2(
+                    sin(pattern * 6.28 + t * 0.5),
+                    cos(pattern * 6.28 + t * 0.4)
+                );
+                
+                float wave1 = sin(uv.y * 5.0 + t * 0.7 + pattern * 3.14) * 0.5 + 0.5;
+                float wave2 = cos(uv.x * 6.0 + t * 0.6 - pattern * 2.5) * 0.5 + 0.5;
+                float wave3 = sin((uv.x + uv.y) * 4.0 + t * 0.5 + pattern * 2.0) * 0.5 + 0.5;
+                float wavePattern = wave1 * wave2 * wave3;
+                
+                vec2 displacement = flowDir * pattern * wavePattern * adjProgress * 0.15;
+                vec2 detailDisplacement = vec2(
+                    sin(uv.y * 8.0 + t * 0.8 + marbleIntensity * 4.0),
+                    cos(uv.x * 7.0 + t * 0.7 - marbleIntensity * 3.5)
+                ) * adjProgress * 0.08;
+                
+                totalDisplacement = displacement + detailDisplacement;
+                
+            } else {
+                // ═══ WAVE MODE (N tuşu / 🌊) - ORİJİNAL DALGA ═══
+                vec2 marbleUV = uv * scaleMultiplier;
+                marbleUV.x += sin(uv.y * 10.0 + t * 0.5) * 0.1 * easedProgress;
+                marbleUV.y += cos(uv.x * 8.0 + t * 0.4) * 0.1 * easedProgress;
+                
+                vec4 marbleColor = texture2D(marbleTexture, marbleUV * 2.0);
+                float displacement = (marbleColor.r + marbleColor.g + marbleColor.b) / 3.0;
+                
+                float dynamicAngle = faceIndex * 1.047 + sin(t * 0.15 + faceIndex) * 2.5 + cos(t * 0.12 + faceIndex * 0.5) * 1.2;
+                
+                vec2 displacementOffset = vec2(
+                    sin(displacement * 6.28 + t * 0.4 + dynamicAngle),
+                    cos(displacement * 6.28 + t * 0.35 + dynamicAngle * 0.7)
+                ) * 0.25 * easedProgress;
+                
+                float w1 = sin(uv.y * 6.0 - t * 0.5 + dynamicAngle) * 0.5 + 0.5;
+                float w2 = cos(uv.x * 7.0 - t * 0.4 + dynamicAngle) * 0.5 + 0.5;
+                float w3 = sin((uv.x + uv.y) * 5.0 - t * 0.35 + dynamicAngle * 0.5) * 0.5 + 0.5;
+                
+                float pulse = getPulse(t * 1.2 + faceIndex, faceIndex * 2.0);
+                float flowPattern = w1 * w2 * w3 * displacement * pulse;
+                float finalDisplacement = flowPattern * easedProgress;
+                
+                totalDisplacement = displacementOffset * finalDisplacement * 2.5;
+                
+                vec2 distortUV = vec2(
+                    displacement * 0.12 * sin(t * 0.4 + dynamicAngle),
+                    displacement * 0.12 * cos(t * 0.32 + dynamicAngle * 0.8)
+                ) * easedProgress * pulse;
+                
+                totalDisplacement += distortUV;
+            }
+            
+            vec2 finalUV = uv + totalDisplacement;
+            gl_FragColor = texture2D(baseTexture, finalUV);
+        } else {
+            gl_FragColor = baseColor;
+        }
+    }
+`;
+
+/* ─── INIT ────────────────────────────────────────────── */
+function init() {
+    scene = new THREE.Scene();
+
+    camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.1, 3000);
+    camera.position.set(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: false,
+        powerPreference: 'high-performance'
+    });
+
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    fitRenderer();
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    textureLoader = new THREE.TextureLoader();
+    textureLoader.crossOrigin = 'anonymous';
+
+    // Marble displacement texture yükle
+    marbleTexture = textureLoader.load(
+        'https://raw.githubusercontent.com/busrasuhaydar/newspaceoverthinktexture/main/assest/12myspacetexture.png',
+        (tex) => {
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+        }
+    );
+
+    loadCubemap(currentImageIndex);
+    setupControls();
+    setupButtons();
+    animate();
+
+    window.addEventListener('resize', onResize, false);
+    window.addEventListener('orientationchange', () => setTimeout(onResize, 200), false);
+}
+
+/* ─── RENDERER BOYUTU ─────────────────────────────────── */
+function fitRenderer() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    renderer.setSize(w, h, false);   // false = CSS'e dokunma
+    // Canvas'ı manuel full ekran yap
+    renderer.domElement.style.position = 'fixed';
+    renderer.domElement.style.top      = '0';
+    renderer.domElement.style.left     = '0';
+    renderer.domElement.style.width    = '100%';
+    renderer.domElement.style.height   = '100%';
+}
+
+/* ─── CUBEMAP YÜKLEYİCİ ───────────────────────────────── */
+function loadCubemap(idx) {
+    const url = skyboxImages[idx];
+    const loader = document.getElementById('loader');
+    loader.classList.remove('hidden');
+
+    const textures = [];
+    let loaded = 0;
+
+    for (let i = 0; i < 6; i++) {
+        const tex = textureLoader.load(url, () => {
+            loaded++;
+            if (loaded === 6) buildSkybox(textures, loader);
+        });
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        textures.push(tex);
+    }
+}
+
+function buildSkybox(textures, loader) {
+    // Her yüz için farklı parametreler - daha subtle farklar
+    const faceParams = [
+        { mirrorX: 0, mirrorY: 0, scale: 1.0,  speed: 1.0 },   // Yüz 0: Normal
+        { mirrorX: 1, mirrorY: 0, scale: 1.15, speed: 0.95 },  // Yüz 1: X aynalı, biraz büyük
+        { mirrorX: 0, mirrorY: 1, scale: 0.9,  speed: 1.05 },  // Yüz 2: Y aynalı, biraz küçük
+        { mirrorX: 1, mirrorY: 1, scale: 1.1,  speed: 0.97 },  // Yüz 3: XY aynalı
+        { mirrorX: 0, mirrorY: 0, scale: 0.95, speed: 1.03 },  // Yüz 4: Normal, hafif küçük
+        { mirrorX: 1, mirrorY: 0, scale: 1.2,  speed: 0.98 }   // Yüz 5: X aynalı, büyük
+    ];
+
+    const materials = textures.map((tex, i) => {
+        const params = faceParams[i];
+        return new THREE.ShaderMaterial({
+            uniforms: {
+                baseTexture:      { value: tex },
+                marbleTexture:    { value: marbleTexture },
+                pouringProgress:  { value: 0.0 },
+                time:             { value: 0.0 },
+                faceIndex:        { value: parseFloat(i) },
+                mirrorX:          { value: params.mirrorX },
+                mirrorY:          { value: params.mirrorY },
+                scaleMultiplier:  { value: params.scale },
+                speedMultiplier:  { value: params.speed },
+                pouringMode:      { value: pouringMode === 'cell' ? 0.0 : 1.0 }
+            },
+            vertexShader,
+            fragmentShader,
+            side: THREE.BackSide
+        });
+    });
+
+    if (skybox) {
+        scene.remove(skybox);
+        skybox.geometry.dispose();
+        skybox.material.forEach(m => m.dispose());
+    }
+
+    skybox = new THREE.Mesh(new THREE.BoxGeometry(2000, 2000, 2000), materials);
+    scene.add(skybox);
+
+    // pouring devam ediyorsa progress'i yeni skybox'a aktar
+    if (isPouring) {
+        skybox.material.forEach(m => { m.uniforms.pouringProgress.value = pouringProgress; });
+    }
+
+    // Loader gizle
+    setTimeout(() => loader.classList.add('hidden'), 400);
+}
+
+/* ─── TEXTURE DEĞİŞTİR ────────────────────────────────── */
+function changeTexture() {
+    currentImageIndex = (currentImageIndex + 1) % skyboxImages.length;
+    loadCubemap(currentImageIndex);
+}
+
+/* ─── MARBLE POURING ──────────────────────────────────── */
+function toggleMarbleCell() {
+    pouringMode = 'cell';
+    toggleMarbleWithMode('btn-marble');
+}
+
+function toggleMarbleWave() {
+    pouringMode = 'wave';
+    toggleMarbleWithMode('btn-marble-wave');
+}
+
+function toggleMarbleWithMode(btnId) {
+    isPouring = !isPouring;
+    const btn = document.getElementById(btnId);
+
+    if (isPouring) {
+        pouringProgress = 0;
+        btn.classList.add('on');
+        
+        // Diğer butonu kapat
+        const otherBtn = btnId === 'btn-marble' ? 'btn-marble-wave' : 'btn-marble';
+        document.getElementById(otherBtn).classList.remove('on');
+        
+        // Skybox'ın pouringMode'unu güncelle
+        if (skybox) {
+            skybox.material.forEach(m => {
+                if (m.uniforms) m.uniforms.pouringMode.value = pouringMode === 'cell' ? 0.0 : 1.0;
+            });
+        }
+    } else {
+        btn.classList.remove('on');
+        fadeOutMarble();
+    }
+}
+
+function fadeOutMarble() {
+    const fadeSpeed = 0.05;
+    const fadeInterval = setInterval(() => {
+        pouringProgress -= fadeSpeed;
+        if (pouringProgress <= 0) {
+            pouringProgress = 0;
+            clearInterval(fadeInterval);
+        }
+        if (skybox) {
+            skybox.material.forEach(m => { 
+                if (m.uniforms) m.uniforms.pouringProgress.value = pouringProgress; 
+            });
+        }
+    }, 16);
+}
+
+function updateMarble(dt) {
+    if (!isPouring) return;
+    
+    // Otomatik loop - breathing/wave efekti
+    // 0 → 1 (gelir) → 0 (gider) → tekrar başlar
+    pouringProgress += dt * pouringSpeed;
+    
+    // Loop: 0 ile 2 arasında gidip gel
+    // 0-1: İleriye (texture geliyor)
+    // 1-2: Geriye (texture gidiyor)
+    if (pouringProgress >= 2.0) {
+        pouringProgress = 0; // Başa dön
+    }
+    
+    // Progress değerini shader'a gönder
+    let shaderProgress;
+    if (pouringProgress <= 1.0) {
+        // 0 → 1: İleri
+        shaderProgress = pouringProgress;
+    } else {
+        // 1 → 2: Geri (2'den 1 çıkar = 1 → 0)
+        shaderProgress = 2.0 - pouringProgress;
+    }
+    
+    if (skybox) {
+        skybox.material.forEach(m => { 
+            if (m.uniforms) m.uniforms.pouringProgress.value = shaderProgress; 
+        });
+    }
+}
+
+/* ─── SİNEMA MODU ─────────────────────────────────────── */
+function toggleCinema() {
+    isCinema = !isCinema;
+    const overlay  = document.getElementById('cinema-overlay');
+    const controls = document.getElementById('controls');
+    const btn      = document.getElementById('btn-cinema');
+
+    if (isCinema) {
+        overlay.classList.add('active');
+        controls.classList.add('hidden');
+        btn.classList.add('on');
+    } else {
+        overlay.classList.remove('active');
+        controls.classList.remove('hidden');
+        btn.classList.remove('on');
+    }
+}
+
+/* ─── BUTONLAR ────────────────────────────────────────── */
+function setupButtons() {
+    document.getElementById('btn-img').addEventListener('click', changeTexture);
+    document.getElementById('btn-cinema').addEventListener('click', toggleCinema);
+    document.getElementById('btn-marble').addEventListener('click', toggleMarbleCell);
+    document.getElementById('btn-marble-wave').addEventListener('click', toggleMarbleWave);
+
+    // Sinema modundan çıkmak için canvas'a çift dokunuş
+    document.getElementById('canvas-container').addEventListener('dblclick', () => {
+        if (isCinema) toggleCinema();
+    });
+    
+    // Klavye kontrolleri
+    window.addEventListener('keydown', e => {
+        const k = e.key.toLowerCase();
+        if (k === 'c') toggleCinema();
+        if (k === 't') changeTexture();
+        if (k === 'b') toggleMarbleCell();
+        if (k === 'n') toggleMarbleWave();
+    });
+}
+
+/* ─── DOKUNMATİK / MOUSE KONTROLLER ──────────────────── */
+function setupControls() {
+    const cvs = renderer.domElement;
+
+    // ── MOUSE ──
+    cvs.addEventListener('mousedown', e => {
+        if (isCinema) return;
+        isDragging = true;
+        prevTouch  = { x: e.clientX, y: e.clientY };
+    });
+    cvs.addEventListener('mousemove', e => {
+        if (!isDragging || isCinema) return;
+        applyDelta(e.clientX - prevTouch.x, e.clientY - prevTouch.y);
+        prevTouch = { x: e.clientX, y: e.clientY };
+    });
+    cvs.addEventListener('mouseup',    () => { isDragging = false; });
+    cvs.addEventListener('mouseleave', () => { isDragging = false; });
+    cvs.addEventListener('wheel', e => {
+        if (isCinema) return;
+        e.preventDefault();
+        camera.fov = clamp(camera.fov + e.deltaY * 0.05, 30, 150);
+        camera.updateProjectionMatrix();
+    }, { passive: false });
+
+    // ── TOUCH ──
+    let pinchDist0 = 0, fov0 = 90;
+
+    cvs.addEventListener('touchstart', e => {
+        if (isCinema) return;
+        if (e.touches.length === 1) {
+            isDragging = true;
+            prevTouch  = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        }
+        if (e.touches.length === 2) {
+            isDragging = false;
+            pinchDist0 = getTouchDist(e.touches);
+            fov0       = camera.fov;
+        }
+    }, { passive: true });
+
+    cvs.addEventListener('touchmove', e => {
+        if (isCinema) return;
+        if (e.touches.length === 1 && isDragging) {
+            applyDelta(e.touches[0].clientX - prevTouch.x, e.touches[0].clientY - prevTouch.y);
+            prevTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        }
+        if (e.touches.length === 2) {
+            const d = getTouchDist(e.touches);
+            camera.fov = clamp(fov0 * (pinchDist0 / d), 30, 150);
+            camera.updateProjectionMatrix();
+        }
+    }, { passive: true });
+
+    cvs.addEventListener('touchend',   () => { isDragging = false; }, { passive: true });
+    cvs.addEventListener('touchcancel',() => { isDragging = false; }, { passive: true });
+}
+
+function applyDelta(dx, dy) {
+    rotation.y += dx * 0.005;
+    rotation.x  = clamp(rotation.x + dy * 0.005, -Math.PI / 2, Math.PI / 2);
+}
+
+function getTouchDist(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+/* ─── ANİMASYON DÖNGÜSÜ ──────────────────────────────── */
+function animate() {
+    requestAnimationFrame(animate);
+
+    const now = performance.now();
+    const dt  = (now - lastTime) / 1000;
+    lastTime  = now;
+
+    updateMarble(dt);
+
+    // Sinema: yavaş otomatik rotasyon
+    if (isCinema) rotation.y += 0.00018 * 60 * dt;
+
+    const t = now / 1000;
+    if (skybox) {
+        skybox.material.forEach(m => {
+            if (m.uniforms && m.uniforms.time) m.uniforms.time.value = t;
+        });
+    }
+
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = rotation.y;
+    camera.rotation.x = rotation.x;
+
+    renderer.render(scene, camera);
+}
+
+/* ─── RESIZE ──────────────────────────────────────────── */
+function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    fitRenderer();
+}
+
+/* ─── BAŞLAT ──────────────────────────────────────────── */
+init();
+</script>
+</body>
+</html>
