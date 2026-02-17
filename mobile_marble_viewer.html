@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Marble Viewer - Mobile</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+            touch-action: none;
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* Mobil Kontrol Butonları */
+        #mobile-controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            display: flex;
+            gap: 12px;
+            z-index: 1000;
+        }
+        
+        .control-btn {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 24px;
+            color: white;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+        
+        .control-btn:active {
+            transform: scale(0.9);
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .control-btn.active {
+            background: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.6);
+            box-shadow: 0 4px 20px rgba(255, 255, 255, 0.3);
+        }
+        
+        /* Sinema Modu Overlay */
+        #cinema-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            z-index: 999;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+        
+        #cinema-overlay.active {
+            opacity: 1;
+        }
+        
+        #cinema-overlay::before,
+        #cinema-overlay::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 15%;
+            background: #000;
+        }
+        
+        #cinema-overlay::before {
+            top: 0;
+        }
+        
+        #cinema-overlay::after {
+            bottom: 0;
+        }
+        
+        /* Mobil için gizle */
+        #mobile-controls.hidden {
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s ease;
+        }
+        
+        /* Touch feedback */
+        .control-btn::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            opacity: 0;
+            transform: scale(0);
+            transition: all 0.3s ease;
+        }
+        
+        .control-btn:active::after {
+            opacity: 1;
+            transform: scale(1.2);
+        }
+
+        /* Responsive için küçük ekranlar */
+        @media (max-width: 480px) {
+            #mobile-controls {
+                top: 15px;
+                left: 15px;
+                gap: 10px;
+            }
+            
+            .control-btn {
+                width: 45px;
+                height: 45px;
+                font-size: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    
+    <!-- Sinema Modu Overlay -->
+    <div id="cinema-overlay"></div>
+    
+    <!-- Mobil Kontrol Butonları -->
+    <div id="mobile-controls">
+        <div class="control-btn" id="btn-change-image" title="Görsel Değiştir">🖼️</div>
+        <div class="control-btn" id="btn-cinema" title="Sinema Modu">🎬</div>
+        <div class="control-btn" id="btn-marble" title="Marble Modu">💧</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, skybox;
+        let isDragging = false;
+        let previousTouchPosition = { x: 0, y: 0 };
+        let rotation = { x: 0, y: 0 };
+        
+        const skyboxImages = [
+            'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/KKKKM.jpg',
+            'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/KMLLO.jpg',
+            'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/KMMK.jpg',
+            'https://raw.githubusercontent.com/busrasuhaydar/b-sy/main/assets/llll.jpg'
+        ];
+        
+        let currentImageIndex = 0;
+        let textureLoader;
+        
+        // MARBLE POURING SİSTEMİ
+        let isPouring = false;
+        let pouringProgress = 0;
+        let marbleTexture = null;
+        let pouringSpeed = 0.5;
+        
+        // SİNEMA MODU
+        let isCinemaMode = false;
+        let cinemaAutoRotate = false;
+        let cinemaRotationSpeed = 0.0003;
+        
+        function init() {
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(
+                90,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                3000
+            );
+            camera.position.set(0, 0, 0);
+            
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true,
+                alpha: false,
+                powerPreference: "high-performance"
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+            
+            textureLoader = new THREE.TextureLoader();
+            textureLoader.crossOrigin = 'anonymous';
+            
+            createSkybox();
+            setupControls();
+            setupMobileButtons();
+            animate();
+            
+            window.addEventListener('resize', onWindowResize, false);
+        }
+        
+        function createSkybox() {
+            const geometry = new THREE.BoxGeometry(2000, 2000, 2000);
+            
+            textureLoader.load(
+                skyboxImages[currentImageIndex],
+                (texture) => {
+                    texture.minFilter = THREE.LinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+                    
+                    const materials = [];
+                    for (let i = 0; i < 6; i++) {
+                        const vertexShader = `
+                            varying vec2 vUv;
+                            void main() {
+                                vUv = uv;
+                                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                            }
+                        `;
+                        
+                        const fragmentShader = `
+                            uniform sampler2D tDiffuse;
+                            uniform float time;
+                            uniform float displacementAmount;
+                            varying vec2 vUv;
+                            
+                            void main() {
+                                vec2 uv = vUv;
+                                
+                                if (displacementAmount > 0.0) {
+                                    float wave1 = sin(uv.y * 10.0 + time * 2.0) * 0.02;
+                                    float wave2 = cos(uv.x * 8.0 - time * 1.5) * 0.015;
+                                    
+                                    uv.x += wave1 * displacementAmount;
+                                    uv.y += wave2 * displacementAmount;
+                                }
+                                
+                                vec4 color = texture2D(tDiffuse, uv);
+                                gl_FragColor = color;
+                            }
+                        `;
+                        
+                        materials.push(new THREE.ShaderMaterial({
+                            uniforms: {
+                                tDiffuse: { value: texture },
+                                time: { value: 0.0 },
+                                displacementAmount: { value: 0.0 }
+                            },
+                            vertexShader: vertexShader,
+                            fragmentShader: fragmentShader,
+                            side: THREE.BackSide
+                        }));
+                    }
+                    
+                    if (skybox) {
+                        scene.remove(skybox);
+                        skybox.geometry.dispose();
+                        skybox.material.forEach(mat => mat.dispose());
+                    }
+                    
+                    skybox = new THREE.Mesh(geometry, materials);
+                    scene.add(skybox);
+                },
+                undefined,
+                (error) => {
+                    console.error('Texture yüklenirken hata:', error);
+                }
+            );
+        }
+        
+        function changeTexture() {
+            currentImageIndex = (currentImageIndex + 1) % skyboxImages.length;
+            createSkybox();
+        }
+        
+        function toggleMarblePouring() {
+            isPouring = !isPouring;
+            
+            if (isPouring) {
+                pouringProgress = 0;
+                document.getElementById('btn-marble').classList.add('active');
+            } else {
+                pouringProgress = 0;
+                document.getElementById('btn-marble').classList.remove('active');
+                
+                if (skybox && skybox.material) {
+                    skybox.material.forEach(mat => {
+                        if (mat.uniforms && mat.uniforms.displacementAmount) {
+                            mat.uniforms.displacementAmount.value = 0;
+                        }
+                    });
+                }
+            }
+        }
+        
+        function toggleCinemaMode() {
+            isCinemaMode = !isCinemaMode;
+            const overlay = document.getElementById('cinema-overlay');
+            const controls = document.getElementById('mobile-controls');
+            const cinemaBtn = document.getElementById('btn-cinema');
+            
+            if (isCinemaMode) {
+                overlay.classList.add('active');
+                controls.classList.add('hidden');
+                cinemaBtn.classList.add('active');
+                cinemaAutoRotate = true;
+            } else {
+                overlay.classList.remove('active');
+                controls.classList.remove('hidden');
+                cinemaBtn.classList.remove('active');
+                cinemaAutoRotate = false;
+            }
+        }
+        
+        function updateMarblePouring(deltaTime) {
+            if (isPouring && skybox && skybox.material) {
+                pouringProgress += deltaTime * pouringSpeed;
+                pouringProgress = Math.min(pouringProgress, 1.0);
+                
+                const displacementValue = pouringProgress;
+                
+                skybox.material.forEach(mat => {
+                    if (mat.uniforms && mat.uniforms.displacementAmount) {
+                        mat.uniforms.displacementAmount.value = displacementValue;
+                    }
+                });
+            }
+        }
+        
+        function setupMobileButtons() {
+            // Görsel değiştir butonu
+            document.getElementById('btn-change-image').addEventListener('click', (e) => {
+                e.preventDefault();
+                changeTexture();
+            });
+            
+            // Sinema modu butonu
+            document.getElementById('btn-cinema').addEventListener('click', (e) => {
+                e.preventDefault();
+                toggleCinemaMode();
+            });
+            
+            // Marble modu butonu
+            document.getElementById('btn-marble').addEventListener('click', (e) => {
+                e.preventDefault();
+                toggleMarblePouring();
+            });
+            
+            // C tuşu ile sinema modu
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'c' || e.key === 'C') {
+                    toggleCinemaMode();
+                }
+            });
+        }
+        
+        function setupControls() {
+            const canvas = renderer.domElement;
+            
+            // Mouse kontrolü (desktop için)
+            canvas.addEventListener('mousedown', (e) => {
+                if (!isCinemaMode) {
+                    isDragging = true;
+                    previousTouchPosition = { x: e.clientX, y: e.clientY };
+                }
+            });
+            
+            canvas.addEventListener('mousemove', (e) => {
+                if (isDragging && !isCinemaMode) {
+                    const deltaMove = {
+                        x: e.clientX - previousTouchPosition.x,
+                        y: e.clientY - previousTouchPosition.y
+                    };
+                    
+                    rotation.y += deltaMove.x * 0.005;
+                    rotation.x += deltaMove.y * 0.005;
+                    rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotation.x));
+                    
+                    previousTouchPosition = { x: e.clientX, y: e.clientY };
+                }
+            });
+            
+            canvas.addEventListener('mouseup', () => { 
+                isDragging = false; 
+            });
+            
+            canvas.addEventListener('mouseleave', () => { 
+                isDragging = false; 
+            });
+            
+            // Touch kontrolü (mobil için)
+            canvas.addEventListener('touchstart', (e) => {
+                if (!isCinemaMode && e.touches.length === 1) {
+                    isDragging = true;
+                    previousTouchPosition = { 
+                        x: e.touches[0].clientX, 
+                        y: e.touches[0].clientY 
+                    };
+                }
+            }, { passive: true });
+            
+            canvas.addEventListener('touchmove', (e) => {
+                if (isDragging && !isCinemaMode && e.touches.length === 1) {
+                    const deltaMove = {
+                        x: e.touches[0].clientX - previousTouchPosition.x,
+                        y: e.touches[0].clientY - previousTouchPosition.y
+                    };
+                    
+                    rotation.y += deltaMove.x * 0.005;
+                    rotation.x += deltaMove.y * 0.005;
+                    rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotation.x));
+                    
+                    previousTouchPosition = { 
+                        x: e.touches[0].clientX, 
+                        y: e.touches[0].clientY 
+                    };
+                }
+            }, { passive: true });
+            
+            canvas.addEventListener('touchend', () => { 
+                isDragging = false; 
+            }, { passive: true });
+            
+            // Pinch zoom (mobil için)
+            let initialPinchDistance = 0;
+            let initialFov = camera.fov;
+            
+            canvas.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 2) {
+                    const dx = e.touches[0].clientX - e.touches[1].clientX;
+                    const dy = e.touches[0].clientY - e.touches[1].clientY;
+                    initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
+                    initialFov = camera.fov;
+                }
+            }, { passive: true });
+            
+            canvas.addEventListener('touchmove', (e) => {
+                if (e.touches.length === 2 && !isCinemaMode) {
+                    const dx = e.touches[0].clientX - e.touches[1].clientX;
+                    const dy = e.touches[0].clientY - e.touches[1].clientY;
+                    const currentDistance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    const scale = initialPinchDistance / currentDistance;
+                    camera.fov = Math.max(30, Math.min(150, initialFov * scale));
+                    camera.updateProjectionMatrix();
+                }
+            }, { passive: true });
+            
+            // Mouse wheel zoom (desktop için)
+            canvas.addEventListener('wheel', (e) => {
+                if (!isCinemaMode) {
+                    e.preventDefault();
+                    camera.fov += e.deltaY * 0.05;
+                    camera.fov = Math.max(30, Math.min(150, camera.fov));
+                    camera.updateProjectionMatrix();
+                }
+            }, { passive: false });
+        }
+        
+        let lastTime = performance.now();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const currentTime = performance.now();
+            const deltaTime = (currentTime - lastTime) / 1000;
+            lastTime = currentTime;
+            
+            // Marble pouring güncelle
+            updateMarblePouring(deltaTime);
+            
+            // Sinema modu otomatik rotasyon
+            if (cinemaAutoRotate) {
+                rotation.y += cinemaRotationSpeed * 60 * deltaTime;
+            }
+            
+            // Shader time uniform'ını güncelle
+            const elapsedTime = currentTime / 1000;
+            if (skybox && skybox.material) {
+                skybox.material.forEach(mat => {
+                    if (mat.uniforms && mat.uniforms.time) {
+                        mat.uniforms.time.value = elapsedTime;
+                    }
+                });
+            }
+            
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = rotation.y;
+            camera.rotation.x = rotation.x;
+            
+            renderer.render(scene, camera);
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        init();
+    </script>
+</body>
+</html>
